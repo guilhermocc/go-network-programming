@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"log"
 	"net"
 	"sync"
 )
 
-var addr = "localhost:8080"
+const (
+	ip   = "127.0.0.1"
+	port = 8080
+)
 
 func main() {
 	server := NewChatServer()
@@ -16,18 +21,20 @@ func main() {
 type ChatServer struct {
 	clientsMtx sync.Mutex
 	clients    map[string]net.Conn
-	listener   net.Listener
+	listener   *net.TCPListener
 }
 
 func NewChatServer() *ChatServer {
-	log.Printf("Starting server...")
+	log.Printf("Iniciando servidor de chat...")
 
-	listener, err := net.Listen("tcp", addr)
+	addr := &net.TCPAddr{IP: net.ParseIP(ip), Port: port}
+
+	listener, err := net.ListenTCP("tcp", addr)
 	if err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 
-	log.Printf("Listening on %s", addr)
+	log.Printf("Servidor de chat iniciado em %v", addr)
 
 	return &ChatServer{
 		clientsMtx: sync.Mutex{},
@@ -38,7 +45,7 @@ func NewChatServer() *ChatServer {
 
 func (cs *ChatServer) Run() {
 	for {
-		conn, err := cs.listener.Accept()
+		conn, err := cs.listener.AcceptTCP()
 		if err != nil {
 			log.Printf("Error: %v", err)
 			continue
@@ -49,33 +56,44 @@ func (cs *ChatServer) Run() {
 
 }
 
-func (cs *ChatServer) handleConnection(conn net.Conn) {
+func (cs *ChatServer) handleConnection(conn *net.TCPConn) {
 	defer conn.Close()
 
-	cs.clientsMtx.Lock()
-	if _, ok := cs.clients[conn.RemoteAddr().String()]; ok {
-		log.Printf("Client %v already has connection", conn.RemoteAddr())
-		conn.Close()
-		return
-	}
-	cs.clients[conn.RemoteAddr().String()] = conn
-	cs.clientsMtx.Unlock()
-	log.Printf("New connection from %v", conn.RemoteAddr())
+	cs.createClient(conn)
 
 	for {
-		buf := make([]byte, 1024)
-		_, err := conn.Read(buf)
-		if err != nil {
-			if err.Error() == "EOF" {
-				log.Printf("Client %v disconnected", conn.RemoteAddr())
-			} else {
-				log.Printf("Error reading from %v: %v", conn.RemoteAddr(), err)
-			}
-			conn.Close()
-			return
+		scanner := bufio.NewScanner(conn)
+		scanner.Split(bufio.ScanLines)
+		for scanner.Scan() {
+			line := scanner.Text() + "\n"
+			cs.sendAll(conn.RemoteAddr(), line)
 		}
-		cs.sendAll(conn.RemoteAddr(), string(buf))
+		err := scanner.Err()
+		if err != nil {
+			log.Printf("Erro de leitura %v: %v", conn.RemoteAddr(), err)
+		}
+
+		cs.removeClient(conn)
+		return
 	}
+}
+
+func (cs *ChatServer) createClient(conn *net.TCPConn) {
+	log.Printf("Cliente conectado %s", conn.RemoteAddr().String())
+	cs.sendAll(conn.LocalAddr(), fmt.Sprintf("Cliente conectado %s\n", conn.RemoteAddr().String()))
+
+	cs.clientsMtx.Lock()
+	cs.clients[conn.RemoteAddr().String()] = conn
+	cs.clientsMtx.Unlock()
+}
+
+func (cs *ChatServer) removeClient(conn *net.TCPConn) {
+	cs.clientsMtx.Lock()
+	delete(cs.clients, conn.RemoteAddr().String())
+	cs.clientsMtx.Unlock()
+
+	log.Printf("Cliente desconectado %s", conn.RemoteAddr().String())
+	cs.sendAll(conn.LocalAddr(), fmt.Sprintf("Cliente desconectado %s\n", conn.RemoteAddr().String()))
 }
 
 func (cs *ChatServer) sendAll(sender net.Addr, msg string) {
@@ -86,8 +104,7 @@ func (cs *ChatServer) sendAll(sender net.Addr, msg string) {
 		}
 		_, err := conn.Write([]byte(sender.String() + ": " + msg))
 		if err != nil {
-			log.Printf("Error writing to %v: %v", conn.RemoteAddr(), err)
-			conn.Close()
+			log.Printf("Erro de escrita %v: %v", conn.RemoteAddr(), err)
 			delete(cs.clients, conn.RemoteAddr().String())
 		}
 	}
