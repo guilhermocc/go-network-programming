@@ -27,15 +27,12 @@ func main() {
 		}
 	}()
 
-	// Create a new scanner to read from stdin
 	scanner := bufio.NewScanner(os.Stdin)
 
-	// Set the scanner to split on lines (default behavior)
 	scanner.Split(bufio.ScanLines)
 
 	for {
 
-		// Read and process each line of the input
 		for scanner.Scan() {
 			line := scanner.Text()
 			_, err := conn.Write([]byte(line + "\n"))
